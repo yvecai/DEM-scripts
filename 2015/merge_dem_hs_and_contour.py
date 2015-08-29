@@ -1,18 +1,16 @@
 #!/usr/bin/env python
-# merge (stupidly, copy on ntop of another) DEMs
-# DEMs directory and filename hardcoded
-# DEM files already prepared via gdal_translate and gdal_buildvrt
-# to make big tiffs
+# fill output with CGIAR, then ASTER, then SRTM, then EUDEM
+# make hillshade
+# make contour, take nodata into account
 
-# Yves Cainaud, WTFPL
-# contours not fully tested yet (07.2015)
+# Yves Cainaud, WTFPL, 08.2015
 
-# 13862
+# 
 CGIAR = True
 ASTER = True
 SRTM = True
 EUDEM = True
-HILLSHADE = False
+HILLSHADE = True
 CONTOURS = True
 
 try:
@@ -47,10 +45,11 @@ NoDataValue=-32767
 test= False
 i = 1
 
+NODATA_LOG = open("nodata_log.txt",'w')
 
 dsASTER=gdal.Open( "/home/website/ASTER_RAW/ASTER_RAW.tif", gdal.GA_ReadOnly )
 #~ Origin = (-180.000138888888898,80.000138888888884)#~ Pixel Size = (0.000277777777778,-0.000277777777778)
-dsSRTMGL1= gdal.Open( "/home/website/SRTMGL1/SRTM_RAW_03-2015.tif", gdal.GA_ReadOnly )
+if SRTM: dsSRTMGL1= gdal.Open( "/home/website/SRTMGL1/SRTM_RAW.tif", gdal.GA_ReadOnly )
 #~ Origin = (-180.000138888888898,60.000138888888891)#~ Pixel Size = (0.000277777777778,-0.000277777777778)
 dsEUDEM=gdal.Open( "/home/website/eudem/eudem-north.tif", gdal.GA_ReadOnly )
 #~ Origin = (-34.999999999999993,75.000000000000000) #~ Pixel Size = (0.000277777777778,-0.000277777777778)
@@ -64,7 +63,7 @@ lon_o = -180
 lat_o = 72
 for lato in range(lat_o, -57, -1):
 	for lono in range(lon_o, 180, 1):
-	
+
 #~ lon_o = 21
 #~ lat_o = 43
 #~ for lato in range(lat_o, 41, -1):
@@ -75,8 +74,8 @@ for lato in range(lat_o, -57, -1):
 	#~ for lono in range(lon_o, -25, 1):
 #~ lon_o = 34 # Revda
 #~ lat_o = 68 # Revda
-#~ for lato in range(lat_o, lat_o-1, -1):
-	#~ for lono in range(lon_o, lon_o+1, 1):
+#~ for lato in range(lat_o, lat_o-2, -1):
+	#~ for lono in range(lon_o, lon_o+2, 1):
 		if lono==-180: lono=-179.98 # gdalwarp issue
 		ratio_dateline=1
 		i=str(lato)+'-'+str(lono)
@@ -99,30 +98,32 @@ for lato in range(lat_o, -57, -1):
 		print "create file ", xsize, ysize
 		sys.stdout.flush()
 		driver = gdal.GetDriverByName( "GTiff" )
-		dest_ds=driver.Create("tmp/out.tif", xsize, ysize, 1, gdal.GDT_Float32,
+		dest_ds=driver.Create("tmp/out_"+str(i)+".tif", xsize, ysize, 1, gdal.GDT_Float32,
 					options=[ 'TILED=YES', "BIGTIFF=YES"])
-		projection   = dsSRTMGL1.GetProjection()
-		dest_ds.SetProjection( projection )	
-		dest_ds.SetGeoTransform( [lono -res/2 - res*(EDGE), res, 0.0, lato-res/2 - (EDGE)*res, 0.0, -res] )
+		if SRTM: projection   = dsSRTMGL1.GetProjection()
+		else: projection   = dsCGIAR.GetProjection()
+		dest_ds.SetProjection( projection )
+		#~ print lono -res/2 - res*(EDGE), res, 0.0, lato+res/2 + (EDGE)*res, 0.0, -res
+		dest_ds.SetGeoTransform( [lono -res/2 - res*(EDGE), res, 0.0, lato+res/2 + (EDGE)*res, 0.0, -res] )
 		
 		print "zero-filling ..."
 		sys.stdout.flush()
-		dest_ds.GetRasterBand(1).Fill(0)
-		dest_ds.GetRasterBand(1).SetNoDataValue( -32767. )
+		dest_ds.GetRasterBand(1).Fill(-32767.)
+		dest_ds.GetRasterBand(1).SetNoDataValue( -32767.)
 		print "filled "
 		sys.stdout.flush()
 		
 		dst_gt = gdal.InvGeoTransform(dest_ds.GetGeoTransform())
 		gtASTER = gdal.InvGeoTransform(dsASTER.GetGeoTransform())
-		gtSRTMGL1 = gdal.InvGeoTransform(dsSRTMGL1.GetGeoTransform())
+		if SRTM: gtSRTMGL1 = gdal.InvGeoTransform(dsSRTMGL1.GetGeoTransform())
 		gtEUDEM = gdal.InvGeoTransform(dsEUDEM.GetGeoTransform())
 		gtCGIAR = gdal.InvGeoTransform(dsCGIAR.GetGeoTransform())
 		cols = dest_ds.RasterXSize
 		rows = dest_ds.RasterYSize
 		colsASTER = dsASTER.RasterXSize
 		rowsASTER = dsASTER.RasterYSize
-		colsSRTMGL1 = dsSRTMGL1.RasterXSize
-		rowsSRTMGL1 = dsSRTMGL1.RasterYSize
+		if SRTM: colsSRTMGL1 = dsSRTMGL1.RasterXSize
+		if SRTM: rowsSRTMGL1 = dsSRTMGL1.RasterYSize
 		colsEUDEM = dsEUDEM.RasterXSize
 		rowsEUDEM = dsEUDEM.RasterYSize
 		colsCGIAR = dsCGIAR.RasterXSize
@@ -186,7 +187,9 @@ for lato in range(lat_o, -57, -1):
 					data = ds_src.GetRasterBand(1).ReadAsArray(new_x_src, new_y_src, new_numCols_src, new_numRows_src)
 					data = data.astype(float)
 					data[data == -32768.]= -32767.
+					if -32767. in data: NODATA_LOG.write("CGIAR "+str(i)+"\n")
 					#~ pdb.set_trace()
+					#~ data[data == -32767.]= np.nan
 					dest_ds.GetRasterBand(1).WriteArray(data, x_dest , y_dest)
 			#~ #	except: 
 			#~ #		print path
@@ -248,14 +251,18 @@ for lato in range(lat_o, -57, -1):
 					data = ds_src.GetRasterBand(1).ReadAsArray(new_x_src, new_y_src, new_numCols_src, new_numRows_src)
 					data = data.astype(float)
 					
-					mar=np.ma.masked_where(data == -32767., data).mask
+					data[data == -32768.]= -32767.
+					if -32767. in data: NODATA_LOG.write("ASTER "+str(i)+"\n")
+					data[data == -32767.]= np.nan
+					
+					#mar=np.ma.masked_where(data == np.nan., data).mask
 					
 					kernel=np.ones((10,10),dtype=np.float)/100
 					data = scipy.signal.convolve2d(data, kernel, mode='same')
 					
-					data = data * (1-mar) -32767.*mar #refill nodata
+					#data = data * (1-mar) -32767.*mar #refill nodata
 					#~ data[data < -500]= -32767
-					
+					data[data == np.nan] = -32767.
 					dest_ds.GetRasterBand(1).WriteArray(data, x_dest , y_dest)
 			#~ #	except: 
 			#~ #		print path
@@ -320,10 +327,12 @@ for lato in range(lat_o, -57, -1):
 					data = ds_src.GetRasterBand(1).ReadAsArray(new_x_src, new_y_src, new_numCols_src, new_numRows_src)
 					data = data.astype(float)
 					kernel=np.ones((3,3),dtype=np.float)/9
-					
+					data[data == -32768.]= -32767.
+					if -32767. in data: NODATA_LOG.write("SRTM "+str(i)+"\n")
+					data[data == -32767.]= np.nan
 					
 					#~ # make a mask out of nodata, to keep data behind
-					mar=np.ma.masked_where(data == -32768. , data).mask
+					mar=np.ma.masked_where(data == np.nan , data).mask
 					
 					#~ pdb.set_trace()
 					#~ # get the output values
@@ -332,7 +341,8 @@ for lato in range(lat_o, -57, -1):
 					new = old * (mar) + data * (1 - mar)
 					
 					new = scipy.signal.convolve2d(new, kernel, mode='same')
-					new[new < -500]= -32767.
+					#~ new[new < -500]= -32767.
+					new[new == np.nan] = -32767.
 					dest_ds.GetRasterBand(1).WriteArray(new, x_dest , y_dest)
 			#~ #	except: 
 			#~ #		print path
@@ -395,21 +405,25 @@ for lato in range(lat_o, -57, -1):
 					#~ data = data.astype(float)
 					#~ # make a mask out of nodata, EUDEM is completed with zeros east of Europe
 					mar=np.ma.masked_where(data <> 0. , data).mask
+					
+					if 0. in data: NODATA_LOG.write("EUDEM "+str(i)+"\n")
+					
 					#~ # get the output values
 					old = dest_ds.GetRasterBand(1).ReadAsArray(x_dest , y_dest, new_numCols_src, new_numRows_src)
 					#~ # replace value where not nodata
 					new = old * (1-mar) + data * mar
-					
+					new[new == np.nan] = -32767.
 					dest_ds.GetRasterBand(1).WriteArray(new, x_dest , y_dest)
 				#~ except: 
 					#~ print path
 			dest_ds.FlushCache()
 		
+		
 		if HILLSHADE :
 			print "Creating Hillshading..."
 			sys.stdout.flush()
 			#dest_ds.GetRasterBand(1).GetStatistics(0,1)
-			subprocess.call("gdaldem hillshade tmp/out.tif -z 2.0 -s 111170.0 -az 315.0 -alt 45.0 tmp/hillshade.tif", shell=True)
+			subprocess.call("gdaldem hillshade tmp/out_"+str(i)+".tif -z 2.0 -s 111170.0 -az 315.0 -alt 45.0 tmp/hillshade.tif", shell=True)
 			print "Warping to 3857..."
 			sys.stdout.flush()
 			outWidth = int(3000 * ratio_dateline)
@@ -437,7 +451,7 @@ for lato in range(lat_o, -57, -1):
 			EDGEX =int(EDGE/ratioX)-1
 			EDGEY =int(EDGE/ratioY)-1
 			
-			dest_ds=driver.Create("out/3857-out-"+str(i)+".tif", cols-2*EDGEX, rows-2*EDGEY, 2, gdal.GDT_Byte,
+			dest_ds=driver.Create("out_hs/3857-out_"+str(i)+".tif", cols-2*EDGEX, rows-2*EDGEY, 2, gdal.GDT_Byte,
 						options=[ 'TILED=YES', "BIGTIFF=YES", "COMPRESS=DEFLATE", "ALPHA=YES"])
 			dest_ds.SetProjection( projection )
 			
@@ -455,7 +469,7 @@ for lato in range(lat_o, -57, -1):
 			
 			print "Creating Contours..."
 			sys.stdout.flush()
-			toShave=gdal.Open( "tmp/out.tif", gdal.GA_ReadOnly )
+			toShave=gdal.Open( "tmp/out_"+str(i)+".tif", gdal.GA_ReadOnly )
 			
 			gt_warped = gdal.InvGeoTransform(toShave.GetGeoTransform())
 			lono_out, lato_out = gdal.ApplyGeoTransform(gdal.InvGeoTransform(gt_warped[1])[1],0,0)
@@ -472,8 +486,9 @@ for lato in range(lat_o, -57, -1):
 			EDGEX =int(EDGE/ratioX)-1
 			EDGEY =int(EDGE/ratioY)-1
 			
-			dest_ds=driver.Create("tmp/out-shaved.tif", cols-2*EDGEX, rows-2*EDGEY, 1, gdal.GDT_Float32,
-						options=["BIGTIFF=YES"])
+			# save the bare DEM
+			dest_ds=driver.Create("out_dem/out_"+str(i)+".tif", cols-2*EDGEX, rows-2*EDGEY, 1, gdal.GDT_Float32,
+						options=['TILED=YES',"BIGTIFF=YES", "COMPRESS=DEFLATE"])
 			dest_ds.SetProjection( projection )
 			
 			dest_ds.SetGeoTransform( [lono_out +EDGEX*reso, reso, 0.0, lato_out-EDGEY*reso, 0.0, -reso] )
@@ -485,17 +500,17 @@ for lato in range(lat_o, -57, -1):
 			dest_ds.FlushCache()
 			#dest_ds.GetRasterBand(1).GetStatistics(0,1)
 			subprocess.call("rm tmp/contours.* tmp/contours-3857.*", shell=True)
-			subprocess.call("gdal_contour -i 10 -snodata -32767 -a height tmp/out-shaved.tif tmp/contours.shp", shell=True)
-			
-			print "To EPSG 3857..."
-			subprocess.call("ogr2ogr -f \"ESRI Shapefile\" -overwrite -t_srs \"+init=epsg:3857\" tmp/contours-3857.shp tmp/contours.shp", shell=True)
+			subprocess.call("gdal_contour -i 10 -snodata -32767 -a height out_dem/out_"+str(i)+".tif tmp/contours.shp", shell=True)
+			print "Exact cut to one degree and "
+			print "projecting to EPSG 3857..."
+			subprocess.call("ogr2ogr -f \"ESRI Shapefile\" -overwrite -clipsrc "+str(lono)+" "+str(lato-1)+" "+str(lono+1)+" "+str(lato)+" "+"-t_srs \"+init=epsg:3857\" tmp/contours-3857.shp tmp/contours.shp", shell=True)
 			print "Simplifying ..."
-			subprocess.call("ogr2ogr -f \"ESRI Shapefile\" -progress -overwrite -simplify 3 out/contours"+str(i)+".shp tmp/contours-3857.shp", shell=True)
-			subprocess.call("gzip out/*.shp", shell=True)
+			subprocess.call("ogr2ogr -f \"ESRI Shapefile\" -progress -overwrite -simplify 4 out_contours/contours_"+str(i)+".shp tmp/contours-3857.shp", shell=True)
+			subprocess.call("gzip -f out_contours/*.shp", shell=True)
 			subprocess.call("rm tmp/*", shell=True)
 			
 			
 # gdalbuildvrt hillshade_05042015.vrt out/*
 # nohup gdal_translate -stats -of GTiff -co "BIGTIFF=YES" -co "TILED=YES" -co "COMPRESS=DEFLATE" -co "ALPHA=YES" hillshade_05042015.vrt hillshade_05042015.tif &
 
-# nohup gdaladdo -r average --config BIGTIFF_OVERVIEW YES hillshade_ovr.tif 2 4 6 8 16 > nohup2.out &
+
